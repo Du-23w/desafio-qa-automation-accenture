@@ -9,6 +9,7 @@ import io.github.bonigarcia.wdm.WebDriverManager;
 
 import org.junit.jupiter.api.Assertions;
 import org.openqa.selenium.By;
+import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
@@ -42,14 +43,19 @@ public class WebTablesSteps {
             By.xpath("//*[normalize-space(.)='First Name']");
 
     private static final By SELETOR_QUANTIDADE =
-            By.cssSelector(".select-wrap select");
+            By.cssSelector(
+                    "select[aria-label='rows per page'], " +
+                    ".-pageSizeOptions select, " +
+                    ".pagination select, " +
+                    ".select-wrap select"
+            );
 
     @Dado("que acesso a página Web Tables")
     public void acessarPaginaWebTables() {
         WebDriverManager.chromedriver().setup();
 
         driver = new ChromeDriver();
-        wait = new WebDriverWait(driver, Duration.ofSeconds(15));
+        wait = new WebDriverWait(driver, Duration.ofSeconds(20));
 
         driver.manage().window().maximize();
         driver.get("https://demoqa.com/webtables");
@@ -71,11 +77,12 @@ public class WebTablesSteps {
             String corpo = driver.findElement(By.tagName("body")).getText();
 
             Assertions.fail(
-                    "Falha ao carregar Web Tables."
+                    "Falha ao carregar ou configurar Web Tables."
                     + "\nURL: " + driver.getCurrentUrl()
                     + "\nTítulo: " + driver.getTitle()
                     + "\nConteúdo: "
-                    + corpo.substring(0, Math.min(corpo.length(), 1500))
+                    + corpo.substring(0, Math.min(corpo.length(), 1500)),
+                    e
             );
         }
     }
@@ -85,42 +92,43 @@ public class WebTablesSteps {
                 driver.findElements(SELETOR_QUANTIDADE);
 
         if (seletores.isEmpty()) {
-            System.out.println(
-                    "Aviso: seletor de quantidade não encontrado. "
-                    + "A validação usará os registros disponíveis."
+            throw new AssertionError(
+                    "Não foi encontrado o seletor de quantidade de linhas."
             );
-            return;
         }
 
         Select select = new Select(seletores.get(0));
 
-        for (WebElement opcao : select.getOptions()) {
-            if ("20".equals(opcao.getAttribute("value"))) {
-                select.selectByValue("20");
+        boolean possui20 = select.getOptions()
+                .stream()
+                .anyMatch(opcao ->
+                        "20".equals(opcao.getAttribute("value"))
+                );
 
-                wait.until(d -> {
-                    List<WebElement> atuais =
-                            d.findElements(SELETOR_QUANTIDADE);
-
-                    if (atuais.isEmpty()) {
-                        return false;
-                    }
-
-                    return "20".equals(
-                            new Select(atuais.get(0))
-                                    .getFirstSelectedOption()
-                                    .getAttribute("value")
-                    );
-                });
-
-                System.out.println("Tabela configurada para 20 linhas.");
-                return;
-            }
+        if (!possui20) {
+            throw new AssertionError(
+                    "A opção de 20 linhas não está disponível."
+            );
         }
 
-        System.out.println(
-                "Aviso: opção de 20 linhas não disponível."
-        );
+        select.selectByValue("20");
+
+        wait.until(d -> {
+            List<WebElement> atuais =
+                    d.findElements(SELETOR_QUANTIDADE);
+
+            if (atuais.isEmpty()) {
+                return false;
+            }
+
+            return "20".equals(
+                    new Select(atuais.get(0))
+                            .getFirstSelectedOption()
+                            .getAttribute("value")
+            );
+        });
+
+        System.out.println("Tabela configurada para 20 linhas.");
     }
 
     @Quando("cadastro um registro com dados dinâmicos")
@@ -141,6 +149,7 @@ public class WebTablesSteps {
         aguardarRegistro(nome);
 
         nomesCadastrados.add(nome);
+
         System.out.println("Registro cadastrado: " + nome);
     }
 
@@ -157,9 +166,9 @@ public class WebTablesSteps {
         String nomeOriginal = nomesCadastrados.get(0);
         WebElement linha = aguardarRegistro(nomeOriginal);
 
-        linha.findElement(By.cssSelector(
-                "[title='Edit'], span[title='Edit']"
-        )).click();
+        clicarElemento(linha.findElement(
+                By.cssSelector("[title='Edit']")
+        ));
 
         wait.until(ExpectedConditions.visibilityOfElementLocated(
                 FORMULARIO
@@ -177,6 +186,7 @@ public class WebTablesSteps {
         aguardarRegistro(nomeAtualizado);
 
         nomesCadastrados.set(0, nomeAtualizado);
+
         System.out.println("Registro atualizado: " + nomeAtualizado);
     }
 
@@ -216,16 +226,17 @@ public class WebTablesSteps {
             abrirFormulario();
 
             preencherFormulario(
-                    nome, "QA" + id, "qa" + id + "@example.com",
+                    nome,
+                    "QA" + id,
+                    "qa" + id + "@example.com",
                     String.valueOf(20 + i),
                     String.valueOf(3000 + i * 100),
                     "QA Automation"
             );
 
             enviarFormulario();
-
-            // Só adiciona à lista depois de confirmar o registro.
             aguardarRegistro(nome);
+
             nomesCadastrados.add(nome);
 
             System.out.println(
@@ -237,7 +248,8 @@ public class WebTablesSteps {
     @Então("os 12 registros cadastrados devem estar visíveis")
     public void validarDozeRegistros() {
         Assertions.assertEquals(
-                12, nomesCadastrados.size(),
+                12,
+                nomesCadastrados.size(),
                 "A quantidade de registros cadastrados está incorreta."
         );
 
@@ -251,7 +263,7 @@ public class WebTablesSteps {
 
         Assertions.assertTrue(
                 faltantes.isEmpty(),
-                "Registros não encontrados: " + faltantes
+                "Registros não encontrados na tabela: " + faltantes
         );
 
         System.out.println("SUCESSO: os 12 registros estão visíveis.");
@@ -294,8 +306,12 @@ public class WebTablesSteps {
     }
 
     private void preencherFormulario(
-            String nome, String sobrenome, String email,
-            String idade, String salario, String departamento
+            String nome,
+            String sobrenome,
+            String email,
+            String idade,
+            String salario,
+            String departamento
     ) {
         preencherCampo("firstName", nome);
         preencherCampo("lastName", sobrenome);
@@ -317,70 +333,217 @@ public class WebTablesSteps {
     }
 
     private void enviarFormulario() {
-        wait.until(ExpectedConditions.elementToBeClickable(
-                BOTAO_SUBMIT
-        )).click();
+        WebElement botao = wait.until(
+                ExpectedConditions.elementToBeClickable(BOTAO_SUBMIT)
+        );
 
-        wait.until(ExpectedConditions.invisibilityOfElementLocated(
-                FORMULARIO
-        ));
-    }
+        botao.click();
 
-    private WebElement aguardarRegistro(String nome) {
-        return wait.until(d -> {
-            List<WebElement> linhas = localizarLinhasVisiveis(d);
+        try {
+            wait.until(
+                    ExpectedConditions.invisibilityOfElementLocated(
+                            FORMULARIO
+                    )
+            );
+        } catch (TimeoutException e) {
+            System.err.println("ERRO: formulário não fechou após o envio.");
+            System.err.println("URL: " + driver.getCurrentUrl());
 
-            for (WebElement linha : linhas) {
-                if (linha.getText().contains(nome)) {
-                    return linha;
+            List<WebElement> formularios =
+                    driver.findElements(FORMULARIO);
+
+            if (!formularios.isEmpty()) {
+                WebElement formulario = formularios.get(0);
+
+                System.err.println(
+                        "Conteúdo do formulário: " + formulario.getText()
+                );
+
+                List<WebElement> camposInvalidos =
+                        formulario.findElements(
+                                By.cssSelector("input:invalid")
+                        );
+
+                for (WebElement campo : camposInvalidos) {
+                    System.err.println(
+                            "Campo inválido: " + campo.getAttribute("id")
+                            + " | Valor: " + campo.getAttribute("value")
+                            + " | Motivo: "
+                            + campo.getAttribute("validationMessage")
+                    );
                 }
             }
 
-            return null;
-        });
+            throw new AssertionError(
+                    "O formulário não foi fechado após clicar em Submit.",
+                    e
+            );
+        }
+    }
+
+    private By localizarRegistro(String nome) {
+        return By.xpath(
+                "//div[contains(concat(' ', normalize-space(@class), ' '), " +
+                "' rt-tr-group ')][.//*[normalize-space(text())='" +
+                nome + "']]"
+        );
+    }
+
+    private WebElement aguardarRegistro(String nome) {
+        try {
+            return wait.until(d -> {
+                List<WebElement> linhas =
+                        d.findElements(
+                                By.cssSelector(".rt-tr-group")
+                        );
+
+                for (WebElement linha : linhas) {
+                    if (linha.getText().contains(nome)) {
+                        return linha;
+                    }
+                }
+
+                return null;
+            });
+
+        } catch (TimeoutException e) {
+            System.err.println(
+                    "\n========== DIAGNÓSTICO WEB TABLES =========="
+            );
+            System.err.println("Registro esperado: " + nome);
+            System.err.println("URL atual: " + driver.getCurrentUrl());
+
+            List<WebElement> formularios =
+                    driver.findElements(FORMULARIO);
+
+            System.err.println(
+                    "Formulário encontrado: " + !formularios.isEmpty()
+            );
+
+            if (!formularios.isEmpty()) {
+                WebElement formulario = formularios.get(0);
+
+                System.err.println(
+                        "Formulário visível: " + formulario.isDisplayed()
+                );
+                System.err.println(
+                        "Conteúdo do formulário: " + formulario.getText()
+                );
+            }
+
+            List<WebElement> botoesAdicionar =
+                    driver.findElements(BOTAO_ADICIONAR);
+
+            System.err.println(
+                    "Botão Add encontrado: " + !botoesAdicionar.isEmpty()
+            );
+
+            if (!botoesAdicionar.isEmpty()) {
+                System.err.println(
+                        "Botão Add visível: " +
+                        botoesAdicionar.get(0).isDisplayed()
+                );
+            }
+
+            List<WebElement> linhas =
+                    driver.findElements(
+                            By.cssSelector(".rt-tr-group")
+                    );
+
+            System.err.println(
+                    "Total de linhas localizadas: " + linhas.size()
+            );
+
+            for (WebElement linha : linhas) {
+                String texto = linha.getText().trim();
+
+                if (!texto.isEmpty()) {
+                    System.err.println("Linha: " + texto);
+                }
+            }
+
+            
+System.err.println("Título da página: " + driver.getTitle());
+
+Object diagnostico = ((JavascriptExecutor) driver).executeScript(
+        "return JSON.stringify({"
+        + "body: document.body.innerText.substring(0, 3000),"
+        + "tabelas: document.querySelectorAll('.rt-table').length,"
+        + "linhas: document.querySelectorAll('.rt-tr-group').length,"
+        + "conteudoTabela: Array.from("
+        + "document.querySelectorAll('.rt-table')"
+        + ").map(t => t.outerHTML.substring(0, 2000))"
+        + "});"
+);
+
+System.err.println("Diagnóstico DOM: " + diagnostico);
+
+            System.err.println("Texto da tabela:");
+
+            List<WebElement> tabelas =
+                    driver.findElements(
+                            By.cssSelector(".rt-table")
+                    );
+
+            for (WebElement tabela : tabelas) {
+                System.err.println(tabela.getText());
+            }
+
+            System.err.println(
+                    "========== FIM DO DIAGNÓSTICO ==========\n"
+            );
+
+            throw new AssertionError(
+                    "O registro '" + nome +
+                    "' não foi localizado após o envio do formulário.",
+                    e
+            );
+        }
     }
 
     private boolean registroExiste(String nome) {
-        for (WebElement linha : localizarLinhasVisiveis(driver)) {
-            if (linha.getText().contains(nome)) {
-                return true;
-            }
-        }
-
-        return false;
+        return !driver.findElements(
+                localizarRegistro(nome)
+        ).isEmpty();
     }
 
     private List<WebElement> localizarLinhasVisiveis(WebDriver d) {
-        // Seletores alternativos para diferentes estruturas da tabela.
-        List<WebElement> linhas = d.findElements(
-                By.cssSelector(".rt-tr-group")
-        );
-
-        if (!linhas.isEmpty()) {
-            return linhas;
-        }
-
-        linhas = d.findElements(
-                By.cssSelector("[role='rowgroup'] [role='row']")
-        );
-
-        if (!linhas.isEmpty()) {
-            return linhas;
-        }
-
         return d.findElements(
-                By.cssSelector("table tbody tr")
+                By.cssSelector(".rt-tr-group")
         );
     }
 
     private void excluirRegistro(String nome) {
         WebElement linha = aguardarRegistro(nome);
 
-        linha.findElement(By.cssSelector(
-                "[title='Delete'], span[title='Delete']"
-        )).click();
+        clicarElemento(linha.findElement(
+                By.cssSelector("[title='Delete']")
+        ));
 
         wait.until(d -> !registroExiste(nome));
+    }
+
+    private void clicarElemento(WebElement elemento) {
+        ((JavascriptExecutor) driver).executeScript(
+                "arguments[0].scrollIntoView({block:'center'});",
+                elemento
+        );
+
+        wait.until(ExpectedConditions.visibilityOf(elemento));
+
+        try {
+            wait.until(ExpectedConditions.elementToBeClickable(
+                    elemento
+            )).click();
+
+        } catch (
+                org.openqa.selenium.ElementClickInterceptedException e
+        ) {
+            ((JavascriptExecutor) driver).executeScript(
+                    "arguments[0].click();",
+                    elemento
+            );
+        }
     }
 
     private String identificadorUnico() {
@@ -398,4 +561,3 @@ public class WebTablesSteps {
         }
     }
 }
-
